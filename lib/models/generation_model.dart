@@ -5,6 +5,7 @@ class GenerationRequest {
   final String category;
   final List<String> sections;
   final String themeColor;
+  final String aiModel;
 
   GenerationRequest({
     required this.applicationType,
@@ -13,16 +14,30 @@ class GenerationRequest {
     required this.category,
     required this.sections,
     required this.themeColor,
+    required this.aiModel,
   });
 
   Map<String, dynamic> toJson() {
+    // Derive hex color from theme name for the AI to use directly
+    final Map<String, String> colorHexMap = {
+      'Blue': '#007BFF',
+      'Cyan': '#00C8FF',
+      'Green': '#00B87A',
+      'Purple': '#7B2FFF',
+      'Red': '#FF3B3B',
+      'Orange': '#FF8C00',
+      'Pink': '#FF2D78',
+      'Indigo': '#4F46E5',
+    };
+    final hexColor = colorHexMap[themeColor] ?? '#007BFF';
     return {
       'projectName': projectName,
       'description': description,
       'category': category,
       'sections': sections,
-      // Note: applicationType and themeColor are not sent to backend
-      // based on your API specification, but kept in model for UI use
+      'themeColor': '$themeColor ($hexColor)',
+      'template': category.toLowerCase().replaceAll(' ', '-'),
+      'aiModel': aiModel,
     };
   }
 }

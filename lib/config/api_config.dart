@@ -1,4 +1,6 @@
 /// Configuration class for API-related constants
+library;
+
 import 'package:flutter/foundation.dart';
 
 class ApiConfig {

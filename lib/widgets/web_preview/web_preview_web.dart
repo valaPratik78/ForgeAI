@@ -43,7 +43,7 @@ class _WebPreviewWebState extends State<WebPreviewWeb> {
           ..style.height = '100%'
           ..style.transform = 'scale(1)'
           ..style.transformOrigin = '0 0';
-        
+
         // Disable zoom on iframe load
         iframe.onLoad.listen((_) {
           try {
@@ -54,12 +54,14 @@ class _WebPreviewWebState extends State<WebPreviewWeb> {
               if (viewport == null) {
                 final meta = iframeDoc.createElement('meta');
                 meta.setAttribute('name', 'viewport');
-                meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no');
+                meta.setAttribute('content',
+                    'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no');
                 iframeDoc.head?.append(meta);
               } else {
-                viewport.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no');
+                viewport.setAttribute('content',
+                    'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no');
               }
-              
+
               // Add CSS to prevent zoom
               final style = iframeDoc.createElement('style');
               style.text = '''
@@ -78,7 +80,7 @@ class _WebPreviewWebState extends State<WebPreviewWeb> {
             // This is expected for security reasons
           }
         });
-        
+
         return iframe;
       },
     );
