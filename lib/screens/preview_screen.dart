@@ -30,6 +30,7 @@ class PreviewScreen extends StatefulWidget {
 
 class _PreviewScreenState extends State<PreviewScreen> {
   final TextEditingController _chatController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
   final List<Map<String, String>> _messages = [];
   final ApiService _apiService = ApiService();
   final ForgeService _forgeService = ForgeService();
@@ -39,9 +40,11 @@ class _PreviewScreenState extends State<PreviewScreen> {
   String? _generationError;
   Timer? _pollTimer;
   String? _currentProjectId;
+  int _consecutivePollErrors = 0;
 
   // Track refresh state for the preview iframe
   Key _previewKey = UniqueKey();
+  int _cacheBuster = DateTime.now().millisecondsSinceEpoch;
 
   @override
   void initState() {
@@ -70,7 +73,20 @@ class _PreviewScreenState extends State<PreviewScreen> {
   void dispose() {
     _pollTimer?.cancel();
     _chatController.dispose();
+    _scrollController.dispose();
     super.dispose();
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
   }
 
   /// Polls the backend every 2 seconds to check if the generation job is complete.
@@ -84,16 +100,16 @@ class _PreviewScreenState extends State<PreviewScreen> {
       return;
     }
 
+    _consecutivePollErrors = 0;
+
     // Poll every 2 seconds
     _pollTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
       try {
-        // If we have a Job ID, check job status.
-        // If only Project ID, assume we aren't generating anymore or use legacy status (which we mapped to job status in service, but that might fail if ID formats differ).
-        // New flow uses Job ID.
         if (widget.jobId != null) {
           final status = await _forgeService.getJobStatus(widget.jobId!);
 
           if (!mounted) return;
+          _consecutivePollErrors = 0;
 
           if (status.isCompleted) {
             timer.cancel();
@@ -102,30 +118,43 @@ class _PreviewScreenState extends State<PreviewScreen> {
               _currentProjectId = status.projectId;
               _messages.add({
                 'role': 'assistant',
-                'text': 'Project generated successfully! displaying preview...',
+                'text': 'Project generated successfully! Displaying preview...',
               });
               _refreshPreview();
             });
+            _scrollToBottom();
           } else if (status.isFailed) {
             timer.cancel();
             setState(() {
               _isInitialGeneration = false;
-              _generationError = status.error ?? 'Unknown error occurred';
+              _generationError = status.error ?? 'Unknown error occurred during generation';
               _messages.add({
                 'role': 'assistant',
                 'text': 'Generation failed: $_generationError',
               });
             });
+            _scrollToBottom();
           }
         } else {
-          // Legacy/Direct mode - if we have projectId but flag says generating?
-          // We shouldn't be here in new flow. Stop polling.
+          // Direct project ID mode
           timer.cancel();
           setState(() => _isInitialGeneration = false);
         }
       } catch (e) {
-        // Log error but continue polling (network glitches happen)
+        _consecutivePollErrors++;
         print('Polling error: $e');
+        if (_consecutivePollErrors >= 15 && mounted) {
+          timer.cancel();
+          setState(() {
+            _isInitialGeneration = false;
+            _generationError = 'Unable to reach backend server at ${ApiConfig.baseUrl}. Please verify the server is running.';
+            _messages.add({
+              'role': 'assistant',
+              'text': 'Connection error: Could not reach backend server at ${ApiConfig.baseUrl}.',
+            });
+          });
+          _scrollToBottom();
+        }
       }
     });
   }
@@ -133,6 +162,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
   void _refreshPreview() {
     setState(() {
       _previewKey = UniqueKey();
+      _cacheBuster = DateTime.now().millisecondsSinceEpoch;
     });
   }
 
@@ -142,28 +172,69 @@ class _PreviewScreenState extends State<PreviewScreen> {
     final text = _chatController.text.trim();
     if (text.isEmpty) return;
 
+    // Check if initial generation is still running
+    if (_isInitialGeneration) {
+      setState(() {
+        _messages.add({'role': 'user', 'text': text});
+        _chatController.clear();
+        _messages.add({
+          'role': 'assistant',
+          'text': 'Your project is still being generated. Please wait until generation completes before requesting edits.',
+        });
+      });
+      _scrollToBottom();
+      return;
+    }
+
     // Ensure we have a project ID before editing
-    if (_currentProjectId == null) return;
+    if (_currentProjectId == null) {
+      setState(() {
+        _messages.add({'role': 'user', 'text': text});
+        _chatController.clear();
+        _messages.add({
+          'role': 'assistant',
+          'text': 'No active project found to edit. Please generate or open a project first.',
+        });
+      });
+      _scrollToBottom();
+      return;
+    }
+
+    if (_isRegenerating) return; // Prevent double submit
 
     setState(() {
       _messages.add({'role': 'user', 'text': text});
       _chatController.clear();
       _isRegenerating = true;
     });
+    _scrollToBottom();
 
     try {
-      await _apiService.editProject(_currentProjectId!, text);
+      final response = await _apiService.editProject(_currentProjectId!, text);
+      if (!mounted) return;
 
-      // Successfully regenerated
-      setState(() {
-        _messages.add({
-          'role': 'assistant',
-          'text': 'Changes applied! Refreshing preview...',
+      if (response.success) {
+        setState(() {
+          _messages.add({
+            'role': 'assistant',
+            'text': response.message.isNotEmpty
+                ? response.message
+                : 'Changes applied! Refreshing preview...',
+          });
+          _isRegenerating = false;
+          _refreshPreview(); // Force iframe reload
         });
-        _isRegenerating = false;
-        _refreshPreview(); // Force iframe reload
-      });
+      } else {
+        setState(() {
+          _messages.add({
+            'role': 'assistant',
+            'text': 'Could not apply changes: ${response.message}',
+          });
+          _isRegenerating = false;
+        });
+      }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _messages.add({
           'role': 'assistant',
@@ -172,6 +243,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
         _isRegenerating = false;
       });
     }
+    _scrollToBottom();
   }
 
   @override
@@ -237,10 +309,14 @@ class _PreviewScreenState extends State<PreviewScreen> {
                   child: Container(
                     color: const Color(0xFF0F172A),
                     child: ListView.builder(
+                      controller: _scrollController,
                       padding: const EdgeInsets.symmetric(
                           horizontal: 16, vertical: 20),
-                      itemCount: _messages.length,
+                      itemCount: _messages.length + (_isRegenerating ? 1 : 0),
                       itemBuilder: (context, index) {
+                        if (index == _messages.length && _isRegenerating) {
+                          return _buildRegeneratingBubble();
+                        }
                         final msg = _messages[index];
                         final isUser = msg['role'] == 'user';
                         return _buildChatBubble(msg['text'] ?? '', isUser);
@@ -274,9 +350,13 @@ class _PreviewScreenState extends State<PreviewScreen> {
                               style: const TextStyle(
                                   color: Colors.white, fontSize: 14),
                               decoration: InputDecoration(
-                                hintText: 'Ask AI to edit...',
+                                hintText: _isRegenerating
+                                    ? 'Applying edits to site...'
+                                    : (_isInitialGeneration
+                                        ? 'Forging site... please wait'
+                                        : 'Ask AI to edit...'),
                                 hintStyle: TextStyle(
-                                  color: Colors.white.withOpacity(0.3),
+                                  color: Colors.white.withOpacity(0.35),
                                 ),
                                 border: InputBorder.none,
                                 contentPadding:
@@ -285,11 +365,23 @@ class _PreviewScreenState extends State<PreviewScreen> {
                               onSubmitted: (_) => _sendMessage(),
                             ),
                           ),
-                          IconButton(
-                            icon: const Icon(Icons.send_rounded,
-                                color: Color(0xFF00F0FF)),
-                            onPressed: _sendMessage,
-                          ),
+                          _isRegenerating
+                              ? const Padding(
+                                  padding: EdgeInsets.all(12.0),
+                                  child: SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Color(0xFF00F0FF),
+                                    ),
+                                  ),
+                                )
+                              : IconButton(
+                                  icon: const Icon(Icons.send_rounded,
+                                      color: Color(0xFF00F0FF)),
+                                  onPressed: _sendMessage,
+                                ),
                         ],
                       ),
                     ),
@@ -446,7 +538,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
                               else if (_currentProjectId != null)
                                 WebPreviewWeb(
                                   key: _previewKey,
-                                  url: ApiConfig.previewUrl(_currentProjectId!),
+                                  url: '${ApiConfig.previewUrl(_currentProjectId!)}?_t=$_cacheBuster',
                                 )
                               else
                                 const Center(
@@ -555,6 +647,48 @@ class _PreviewScreenState extends State<PreviewScreen> {
             fontSize: 14,
             height: 1.4,
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRegeneratingBubble() {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 20),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E293B),
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(16),
+            topRight: Radius.circular(16),
+            bottomLeft: Radius.circular(4),
+            bottomRight: Radius.circular(16),
+          ),
+          border: Border.all(color: const Color(0xFF00F0FF).withValues(alpha: 0.3)),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Color(0xFF00F0FF),
+              ),
+            ),
+            SizedBox(width: 10),
+            Text(
+              'Forging your changes...',
+              style: TextStyle(
+                color: Color(0xFF00F0FF),
+                fontSize: 13,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ],
         ),
       ),
     );

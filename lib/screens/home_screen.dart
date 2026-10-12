@@ -1,13 +1,18 @@
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../models/generation_model.dart';
 import '../services/forge_service.dart';
+import '../config/api_config.dart';
+import '../widgets/web_preview/web_preview_pane.dart';
 import 'preview_screen.dart';
 import '../main.dart';
 
-/// The primary entry point for the user.
-/// Redesigned to match the Forge AI "New Project Environment" screen.
-/// Split-pane layout: left = Project Details + Architecture, right = Visual preview
+/// The primary entry point for ForgeAI.
+/// Features a gated 4-step wizard workflow:
+/// Step 1: Site Identity & Page Selection
+/// Step 2: Custom Page Content (Zero dummy data, with AI prompt helper)
+/// Step 3: Pre-built Template Selection & Live Interactive Preview
+/// Step 4: Styling (Color Theme, Relevant Image Mood) & Launch
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -17,32 +22,71 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
-  final _formKey = GlobalKey<FormState>();
   final _forgeService = ForgeService();
 
-  final _projectNameController = TextEditingController();
-  final _descriptionController = TextEditingController();
-
-  String _selectedCategory = 'Landing Page';
-  String _themeColor = '#A788FA';
-  String _aiModel = 'Nvidia';
+  // Wizard state
+  int _currentStep = 0;
   bool _isLoading = false;
-
   late AnimationController _scanAnimController;
 
+  // Step 1: Project Identity & Pages
+  final _projectNameController = TextEditingController();
+  final _objectiveController = TextEditingController();
+  String _selectedCategory = 'Startup / SaaS';
+
   final List<String> _categories = [
+    'Startup / SaaS',
     'Portfolio',
+    'Business',
     'Landing Page',
     'Product Page',
     'Blog',
   ];
 
+  final List<Map<String, String>> _availablePages = [
+    {'id': 'Home', 'file': 'index.html', 'desc': 'Primary landing showcase'},
+    {'id': 'About Us', 'file': 'about.html', 'desc': 'Mission, story & leadership'},
+    {'id': 'Services', 'file': 'services.html', 'desc': 'Offerings & value propositions'},
+    {'id': 'Pricing', 'file': 'pricing.html', 'desc': 'Plans, tiers & billing options'},
+    {'id': 'Contact', 'file': 'contact.html', 'desc': 'Inquiries & connection channels'},
+    {'id': 'Projects', 'file': 'projects.html', 'desc': 'Case studies & portfolio grid'},
+    {'id': 'Features', 'file': 'features.html', 'desc': 'Deep-dive product capabilities'},
+    {'id': 'Articles', 'file': 'articles.html', 'desc': 'Editorial essays & news'},
+  ];
+
+  final Set<String> _selectedPageIds = {'Home', 'About Us', 'Contact'};
+
+  // Step 2: Custom Page Content (Controllers per page)
+  final Map<String, TextEditingController> _pageContentControllers = {};
+  String _activeContentTab = 'Home';
+
+  // Step 3: Templates
+  List<TemplateInfo> _templates = [];
+  String _selectedTemplateId = 'startup';
+  bool _loadingTemplates = true;
+
+  // Step 4: Design Theme & Images
+  String _themeColor = '#A788FA';
+  String _imageTheme = 'Modern Tech & Minimalist';
+  String _aiModel = 'Nvidia';
+  final _customHexController = TextEditingController(text: '#A788FA');
+
   final List<Map<String, String>> _colorPalette = [
     {'hex': '#A788FA', 'label': 'Violet'},
-    {'hex': '#7701D0', 'label': 'Purple'},
+    {'hex': '#2563EB', 'label': 'Blue'},
     {'hex': '#00FF90', 'label': 'Emerald'},
     {'hex': '#FFB700', 'label': 'Amber'},
+    {'hex': '#FF2D78', 'label': 'Rose'},
+    {'hex': '#7701D0', 'label': 'Purple'},
     {'hex': '#E3E1E9', 'label': 'White'},
+  ];
+
+  final List<String> _imageThemes = [
+    'Modern Tech & Minimalist',
+    'Creative Studio & Design',
+    'Enterprise & Corporate',
+    'Product & Hardware',
+    'Editorial & Storytelling',
   ];
 
   @override
@@ -52,41 +96,174 @@ class _HomeScreenState extends State<HomeScreen>
       vsync: this,
       duration: const Duration(seconds: 3),
     )..repeat();
+
+    _initControllersForSelectedPages();
+    _loadTemplates();
+  }
+
+  void _initControllersForSelectedPages() {
+    for (final page in _selectedPageIds) {
+      if (!_pageContentControllers.containsKey(page)) {
+        _pageContentControllers[page] = TextEditingController();
+      }
+    }
+  }
+
+  Future<void> _loadTemplates() async {
+    try {
+      final list = await _forgeService.fetchTemplates();
+      if (mounted) {
+        setState(() {
+          _templates = list;
+          _loadingTemplates = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _loadingTemplates = false);
+      }
+    }
   }
 
   @override
   void dispose() {
     _scanAnimController.dispose();
     _projectNameController.dispose();
-    _descriptionController.dispose();
+    _objectiveController.dispose();
+    _customHexController.dispose();
+    for (final c in _pageContentControllers.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
+  // --- Step Validation & Gating ---
+  bool _validateStep(int step) {
+    if (step == 0) {
+      if (_projectNameController.text.trim().isEmpty) {
+        _showToast('Please provide a Site / Project Name to continue.');
+        return false;
+      }
+      if (_selectedPageIds.isEmpty) {
+        _showToast('Please select at least one page for your website.');
+        return false;
+      }
+      return true;
+    }
+
+    if (step == 1) {
+      // Ensure each selected page has some content
+      for (final pageId in _selectedPageIds) {
+        final ctrl = _pageContentControllers[pageId];
+        if (ctrl == null || ctrl.text.trim().isEmpty) {
+          _showToast(
+              'Please provide content for the "$pageId" page (or use AI prompt helper).');
+          setState(() => _activeContentTab = pageId);
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (step == 2) {
+      if (_selectedTemplateId.isEmpty) {
+        _showToast('Please select a template to continue.');
+        return false;
+      }
+      return true;
+    }
+
+    return true;
+  }
+
+  void _goToStep(int targetStep) {
+    if (targetStep < _currentStep) {
+      setState(() => _currentStep = targetStep);
+      return;
+    }
+    // Gating check: All intermediate steps must be valid
+    for (int s = _currentStep; s < targetStep; s++) {
+      if (!_validateStep(s)) return;
+    }
+    setState(() => _currentStep = targetStep);
+  }
+
+  void _nextStep() {
+    if (_validateStep(_currentStep)) {
+      if (_currentStep < 3) {
+        setState(() => _currentStep++);
+      } else {
+        _generateApplication();
+      }
+    }
+  }
+
+  void _prevStep() {
+    if (_currentStep > 0) {
+      setState(() => _currentStep--);
+    }
+  }
+
+  void _showToast(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.info_outline, color: Colors.white, size: 18),
+            const SizedBox(width: 10),
+            Expanded(child: Text(message)),
+          ],
+        ),
+        backgroundColor: const Color(0xFFEF4444),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _copyAiPromptForPage(String pageId) {
+    final siteName = _projectNameController.text.trim().isNotEmpty
+        ? _projectNameController.text.trim()
+        : 'our brand';
+    final objective = _objectiveController.text.trim().isNotEmpty
+        ? _objectiveController.text.trim()
+        : 'a premier high-performance digital presence';
+
+    final promptText =
+        'Write realistic, high-converting, and detailed marketing copy for the "$pageId" page of "$siteName", which is a $_selectedCategory website. Core objective: $objective. Provide compelling headlines, value propositions, key sections, and call-to-actions.';
+
+    Clipboard.setData(ClipboardData(text: promptText));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Copied AI prompt for "$pageId" to clipboard! Paste into ChatGPT/Gemini.'),
+        backgroundColor: const Color(0xFF10B981),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   Future<void> _generateApplication() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (!_validateStep(0) || !_validateStep(1) || !_validateStep(2)) return;
 
     setState(() => _isLoading = true);
 
     try {
-      String name = _projectNameController.text.trim();
-      String desc = _descriptionController.text.trim();
+      final name = _projectNameController.text.trim();
+      final desc = _objectiveController.text.trim().isNotEmpty
+          ? _objectiveController.text.trim()
+          : 'High-impact digital experience built for excellence and scalability.';
 
-      if (name.isEmpty) {
-        if (_selectedCategory == 'Portfolio') {
-          name = 'Alex Morgan';
-          if (desc.isEmpty) desc = 'Creative technologist & senior product designer specializing in high-performance digital systems.';
-        } else if (_selectedCategory == 'Landing Page') {
-          name = 'Nova Systems';
-          if (desc.isEmpty) desc = 'Next-generation cloud orchestration platform built for high-throughput teams and enterprise scale.';
-        } else if (_selectedCategory == 'Product Page') {
-          name = 'Aura Core X';
-          if (desc.isEmpty) desc = 'Precision-engineered hardware and software interface for modern creative professionals.';
-        } else {
-          name = 'The Terminal Post';
-          if (desc.isEmpty) desc = 'Deep analytical essays on software engineering, architecture, and technology culture.';
+      // Collect user-provided page contents
+      final Map<String, String> pageContents = {};
+      final List<String> selectedFileNames = [];
+
+      for (final p in _availablePages) {
+        if (_selectedPageIds.contains(p['id'])) {
+          selectedFileNames.add(p['file']!);
+          final content = _pageContentControllers[p['id']]?.text.trim();
+          if (content != null && content.isNotEmpty) {
+            pageContents[p['id']!] = content;
+          }
         }
-      } else if (desc.isEmpty) {
-        desc = 'A modern high-impact digital experience built for excellence, performance, and scalability.';
       }
 
       final request = GenerationRequest(
@@ -94,9 +271,13 @@ class _HomeScreenState extends State<HomeScreen>
         projectName: name,
         description: desc,
         category: _selectedCategory,
-        sections: ['Home', 'About', 'Contact'],
+        sections: _selectedPageIds.toList(),
         themeColor: _themeColor,
         aiModel: _aiModel,
+        selectedPages: selectedFileNames,
+        pageContents: pageContents,
+        template: _selectedTemplateId,
+        imageTheme: _imageTheme,
       );
 
       final response = await _forgeService.generateApplication(request);
@@ -115,12 +296,7 @@ class _HomeScreenState extends State<HomeScreen>
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(e.toString()),
-          backgroundColor: const Color(0xFFEF4444),
-        ),
-      );
+      _showToast(e.toString());
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -133,13 +309,21 @@ class _HomeScreenState extends State<HomeScreen>
       body: Column(
         children: [
           _buildNavBar(),
-          Expanded(child: _buildBody()),
+          _buildWizardStepper(),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              child: _buildCurrentStepContent(),
+            ),
+          ),
+          _buildBottomBar(),
           _buildFooter(),
         ],
       ),
     );
   }
 
+  // --- Header Navigation ---
   Widget _buildNavBar() {
     return Container(
       height: 56,
@@ -153,33 +337,57 @@ class _HomeScreenState extends State<HomeScreen>
           Row(
             children: [
               Container(
-                width: 28,
-                height: 28,
+                width: 30,
+                height: 30,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(6),
+                  borderRadius: BorderRadius.circular(8),
                   gradient: const LinearGradient(
                     colors: [Color(0xFFA78BFA), Color(0xFF7C3AED)],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
                 ),
-                child: const Icon(Icons.bolt, color: Colors.white, size: 16),
+                child: const Icon(Icons.bolt, color: Colors.white, size: 18),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 10),
               const Text(
                 'Forge AI',
                 style: TextStyle(
                   color: Color(0xFFFAFAFA),
-                  fontWeight: FontWeight.w600,
-                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 16,
+                  letterSpacing: 0.5,
                 ),
               ),
             ],
           ),
-          const SizedBox(width: 40),
-          ..._buildNavLinks(),
+          const SizedBox(width: 32),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: const Color(0xFF18181B),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: const Color(0xFF27272A)),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.layers_outlined, size: 14, color: Color(0xFFA78BFA)),
+                SizedBox(width: 6),
+                Text(
+                  'Multi-Step Site Forge Studio',
+                  style: TextStyle(
+                    color: Color(0xFFA1A1AA),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
           const Spacer(),
           IconButton(
+            tooltip: 'Toggle Theme',
             onPressed: () {
               themeModeNotifier.value =
                   themeModeNotifier.value == ThemeMode.dark
@@ -196,655 +404,1082 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ),
           ),
-          const SizedBox(width: 12),
-          _buildPrimaryButton(
-            label: 'Launch Project',
-            icon: Icons.rocket_launch_outlined,
-            onTap: _isLoading ? null : _generateApplication,
-          ),
         ],
       ),
     );
   }
 
-  List<Widget> _buildNavLinks() {
-    final links = ['Home', 'Solutions', 'Pricing', 'Showcases'];
-    return links.map((link) {
-      final isActive = link == 'Home';
-      return Padding(
-        padding: const EdgeInsets.only(right: 24),
-        child: Text(
-          link,
-          style: TextStyle(
-            color: isActive ? const Color(0xFFA78BFA) : const Color(0xFFA1A1AA),
-            fontSize: 14,
-            fontWeight: isActive ? FontWeight.w500 : FontWeight.normal,
-            decoration: isActive ? TextDecoration.underline : null,
-            decorationColor: const Color(0xFFA78BFA),
-            decorationThickness: 2,
-          ),
-        ),
-      );
-    }).toList();
-  }
+  // --- Multi-Step Wizard Indicator ---
+  Widget _buildWizardStepper() {
+    final stepLabels = [
+      {'num': '1', 'title': 'Site & Pages', 'sub': 'Configure Pages'},
+      {'num': '2', 'title': 'Page Content', 'sub': 'Zero Dummy Data'},
+      {'num': '3', 'title': 'Template & Preview', 'sub': 'Live Demo'},
+      {'num': '4', 'title': 'Theme & Launch', 'sub': 'Colors & Images'},
+    ];
 
-  Widget _buildPrimaryButton({
-    required String label,
-    required IconData icon,
-    required VoidCallback? onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        decoration: BoxDecoration(
-          color: const Color(0xFFA78BFA),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          children: [
-            if (onTap == null)
-              const SizedBox(
-                width: 14,
-                height: 14,
-                child: CircularProgressIndicator(
-                    strokeWidth: 2, color: Colors.white),
-              )
-            else
-              Icon(icon, color: Colors.white, size: 14),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w600,
-                fontSize: 13,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildBody() {
-    return Padding(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          RichText(
-            text: const TextSpan(
-              style: TextStyle(
-                fontSize: 32,
-                fontWeight: FontWeight.w700,
-              ),
-              children: [
-                TextSpan(
-                    text: 'New ',
-                    style: TextStyle(color: Color(0xFFFAFAFA))),
-                TextSpan(
-                    text: 'Project Environment',
-                    style: TextStyle(color: Color(0xFFA78BFA))),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Configure your digital infrastructure. Forge AI will construct your optimized\narchitecture in real-time based on these parameters.',
-            style: TextStyle(
-              color: Color(0xFFA1A1AA),
-              fontSize: 13,
-              height: 1.5,
-            ),
-          ),
-          const SizedBox(height: 20),
-          Expanded(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                SizedBox(width: 340, child: _buildLeftPanel()),
-                const SizedBox(width: 16),
-                Expanded(child: _buildRightPanel()),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildLeftPanel() {
-    return Form(
-      key: _formKey,
-      child: SingleChildScrollView(
-        child: Column(
-          children: [
-            _buildProjectDetailsCard(),
-            const SizedBox(height: 12),
-            _buildArchitectureCard(),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildObsidianCard(
-      {required String title,
-      required IconData icon,
-      required Widget child}) {
     return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0C0C0F),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: const Color(0xFF27272A), width: 1),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+      decoration: const BoxDecoration(
+        color: Color(0xFF0C0C0F),
+        border: Border(bottom: BorderSide(color: Color(0xFF27272A))),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, color: const Color(0xFFA78BFA), size: 16),
-              const SizedBox(width: 8),
-              Text(
-                title,
-                style: const TextStyle(
-                  color: Color(0xFFFAFAFA),
-                  fontWeight: FontWeight.w500,
-                  fontSize: 14,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          child,
-        ],
-      ),
-    );
-  }
-
-  Widget _buildProjectDetailsCard() {
-    return _buildObsidianCard(
-      title: 'Project Details',
-      icon: Icons.info_outline,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildFieldLabel('APPLICATION NAME'),
-          const SizedBox(height: 6),
-          _buildObsidianTextField(
-              controller: _projectNameController,
-              hint: 'Nexus E-Commerce'),
-          const SizedBox(height: 14),
-          _buildFieldLabel('CORE OBJECTIVE'),
-          const SizedBox(height: 6),
-          _buildObsidianTextField(
-            controller: _descriptionController,
-            hint:
-                'A modern storefront for high-end mechanical keyboards...',
-            maxLines: 4,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildArchitectureCard() {
-    return _buildObsidianCard(
-      title: 'Architecture',
-      icon: Icons.grid_view_rounded,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildFieldLabel('PRIMARY CATEGORY'),
-          const SizedBox(height: 10),
-          _buildCategoryGrid(),
-          const SizedBox(height: 16),
-          _buildFieldLabel('AI MODEL'),
-          const SizedBox(height: 10),
-          _buildAiModelSelector(),
-          const SizedBox(height: 16),
-          _buildFieldLabel('COLOR PALETTE'),
-          const SizedBox(height: 4),
-          Text(
-            'HEX. MAP. ACTIVE',
-            style: TextStyle(
-              color: const Color(0xFFA78BFA).withOpacity(0.7),
-              fontSize: 10,
-              letterSpacing: 1.0,
-            ),
-          ),
-          const SizedBox(height: 10),
-          _buildColorPalette(),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: const Color(0xFF18181B),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: const Color(0xFF27272A)),
-            ),
-            child: const Text(
-              'SYSTEM NOTE: SELECTED PALETTE WILL PROPAGATE TO ALL UI COMPONENTS.',
-              style: TextStyle(
-                color: Color(0xFFA1A1AA),
-                fontSize: 10,
-                letterSpacing: 0.5,
-                height: 1.4,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFieldLabel(String label) {
-    return Text(
-      label,
-      style: const TextStyle(
-        color: Color(0xFFA1A1AA),
-        fontSize: 10,
-        letterSpacing: 1.2,
-        fontWeight: FontWeight.w500,
-      ),
-    );
-  }
-
-  Widget _buildObsidianTextField({
-    required TextEditingController controller,
-    required String hint,
-    int maxLines = 1,
-  }) {
-    return TextFormField(
-      controller: controller,
-      maxLines: maxLines,
-      style: const TextStyle(color: Color(0xFFFAFAFA), fontSize: 13),
-      decoration: InputDecoration(
-        hintText: hint,
-        hintStyle: const TextStyle(color: Color(0xFF52525B), fontSize: 13),
-        filled: true,
-        fillColor: const Color(0xFF18181B),
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(6),
-          borderSide: const BorderSide(color: Color(0xFF27272A)),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(6),
-          borderSide:
-              const BorderSide(color: Color(0xFFA78BFA), width: 2),
-        ),
-        errorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(6),
-          borderSide: const BorderSide(color: Color(0xFFEF4444)),
-        ),
-        focusedErrorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(6),
-          borderSide:
-              const BorderSide(color: Color(0xFFEF4444), width: 2),
-        ),
-      ),
-      validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
-    );
-  }
-
-  Widget _buildCategoryGrid() {
-    return GridView.count(
-      crossAxisCount: 2,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      crossAxisSpacing: 8,
-      mainAxisSpacing: 8,
-      childAspectRatio: 3.5,
-      children: _categories.map((cat) {
-        final isSelected = _selectedCategory == cat;
-        return GestureDetector(
-          onTap: () => setState(() => _selectedCategory = cat),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
-            decoration: BoxDecoration(
-              color: isSelected
-                  ? const Color(0xFFA78BFA).withOpacity(0.15)
-                  : const Color(0xFF18181B),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(
-                color: isSelected
+      child: Row(
+        children: List.generate(stepLabels.length * 2 - 1, (index) {
+          if (index.isOdd) {
+            final stepIndex = index ~/ 2;
+            final isCompleted = _currentStep > stepIndex;
+            return Expanded(
+              child: Container(
+                height: 2,
+                color: isCompleted
                     ? const Color(0xFFA78BFA)
                     : const Color(0xFF27272A),
-                width: isSelected ? 1.5 : 1,
               ),
-            ),
-            child: Center(
-              child: Text(
-                cat,
-                style: TextStyle(
-                  color: isSelected
-                      ? const Color(0xFFA78BFA)
-                      : const Color(0xFFA1A1AA),
-                  fontSize: 12,
-                  fontWeight: isSelected
-                      ? FontWeight.w600
-                      : FontWeight.normal,
-                ),
-              ),
-            ),
-          ),
-        );
-      }).toList(),
-    );
-  }
+            );
+          }
 
-  Widget _buildAiModelSelector() {
-    return Column(
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: _buildModelOption(
-                id: 'Nvidia',
-                label: 'Nemotron 70B (NIM)',
-                color: const Color(0xFFA78BFA),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: _buildModelOption(
-                id: 'Gemini',
-                label: 'Gemini 1.5 Pro',
-                color: const Color(0xFF34D399),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: _buildModelOption(
-                id: 'OpenRouter',
-                label: 'Nemotron Ultra (OR)',
-                color: const Color(0xFF3B82F6),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
+          final stepIndex = index ~/ 2;
+          final step = stepLabels[stepIndex];
+          final isActive = _currentStep == stepIndex;
+          final isCompleted = _currentStep > stepIndex;
 
-  Widget _buildModelOption({
-    required String id,
-    required String label,
-    required Color color,
-  }) {
-    final isSelected = _aiModel == id;
-    return GestureDetector(
-      onTap: () => setState(() => _aiModel = id),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        decoration: BoxDecoration(
-          color: isSelected ? color.withOpacity(0.15) : const Color(0xFF18181B),
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(
-            color: isSelected ? color : const Color(0xFF27272A),
-          ),
-        ),
-        child: Center(
-          child: Text(
-            label,
-            style: const TextStyle(
-              color: Color(0xFFFAFAFA),
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
+          return InkWell(
+            onTap: () => _goToStep(stepIndex),
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              child: Row(
+                children: [
+                  Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: isCompleted
+                          ? const Color(0xFFA78BFA)
+                          : isActive
+                              ? const Color(0xFFA78BFA).withOpacity(0.2)
+                              : const Color(0xFF18181B),
+                      border: Border.all(
+                        color: isCompleted || isActive
+                            ? const Color(0xFFA78BFA)
+                            : const Color(0xFF3F3F46),
+                        width: isActive ? 2 : 1,
+                      ),
+                    ),
+                    child: Center(
+                      child: isCompleted
+                          ? const Icon(Icons.check, size: 16, color: Colors.white)
+                          : Text(
+                              step['num']!,
+                              style: TextStyle(
+                                color: isActive
+                                    ? const Color(0xFFA78BFA)
+                                    : const Color(0xFFA1A1AA),
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        step['title']!,
+                        style: TextStyle(
+                          color: isActive
+                              ? const Color(0xFFFAFAFA)
+                              : isCompleted
+                                  ? const Color(0xFFA78BFA)
+                                  : const Color(0xFF71717A),
+                          fontSize: 12,
+                          fontWeight:
+                              isActive ? FontWeight.w600 : FontWeight.w500,
+                        ),
+                      ),
+                      Text(
+                        step['sub']!,
+                        style: const TextStyle(
+                          color: Color(0xFF52525B),
+                          fontSize: 10,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
-          ),
-        ),
+          );
+        }),
       ),
     );
   }
 
-  Widget _buildColorPalette() {
+  // --- Step Routing ---
+  Widget _buildCurrentStepContent() {
+    switch (_currentStep) {
+      case 0:
+        return _buildStep1SiteAndPages();
+      case 1:
+        return _buildStep2PageContent();
+      case 2:
+        return _buildStep3TemplatesAndPreview();
+      case 3:
+        return _buildStep4ThemeAndLaunch();
+      default:
+        return const SizedBox();
+    }
+  }
+
+  // ==========================================
+  // STEP 1: Site Identity & Page Selection
+  // ==========================================
+  Widget _buildStep1SiteAndPages() {
     return Row(
-      children: _colorPalette.map((c) {
-        final isSelected = _themeColor == c['hex'];
-        final color =
-            Color(int.parse(c['hex']!.replaceFirst('#', '0xFF')));
-        return GestureDetector(
-          onTap: () => setState(() => _themeColor = c['hex']!),
-          child: Padding(
-            padding: const EdgeInsets.only(right: 10),
-            child: Column(
-              children: [
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 150),
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: color,
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(
-                      color: isSelected
-                          ? Colors.white
-                          : Colors.transparent,
-                      width: 2,
-                    ),
-                    boxShadow: isSelected
-                        ? [
-                            BoxShadow(
-                              color: color.withOpacity(0.5),
-                              blurRadius: 8,
-                              spreadRadius: 1,
-                            )
-                          ]
-                        : null,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Left Column: Identity Form
+        Expanded(
+          flex: 5,
+          child: _buildCard(
+            title: 'Project Identity & Purpose',
+            icon: Icons.badge_outlined,
+            expand: false,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildLabel('WEBSITE / PROJECT NAME *'),
+                  const SizedBox(height: 6),
+                  _buildTextField(
+                    controller: _projectNameController,
+                    hint: 'e.g. Apex Workflow, Sarah Designer, CloudPeak Labs',
+                    prefixIcon: Icons.web_rounded,
                   ),
-                  child: isSelected
-                      ? const Icon(Icons.check,
-                          color: Colors.white, size: 16)
-                      : null,
+                  const SizedBox(height: 16),
+                  _buildLabel('INDUSTRY / CATEGORY'),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: _categories.map((cat) {
+                      final isSelected = _selectedCategory == cat;
+                      return ChoiceChip(
+                        label: Text(cat),
+                        selected: isSelected,
+                        onSelected: (_) => setState(() => _selectedCategory = cat),
+                        selectedColor: const Color(0xFFA78BFA).withOpacity(0.2),
+                        backgroundColor: const Color(0xFF18181B),
+                        labelStyle: TextStyle(
+                          color: isSelected
+                              ? const Color(0xFFA78BFA)
+                              : const Color(0xFFA1A1AA),
+                          fontSize: 12,
+                          fontWeight:
+                              isSelected ? FontWeight.w600 : FontWeight.normal,
+                        ),
+                        side: BorderSide(
+                          color: isSelected
+                              ? const Color(0xFFA78BFA)
+                              : const Color(0xFF27272A),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 16),
+                  _buildLabel('CORE OBJECTIVE & MISSION'),
+                  const SizedBox(height: 6),
+                  _buildTextField(
+                    controller: _objectiveController,
+                    hint:
+                        'A high-performance modern platform built to empower innovators and automate complex workflows.',
+                    maxLines: 4,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 16),
+
+        // Right Column: Target Pages Matrix
+        Expanded(
+          flex: 6,
+          child: _buildCard(
+            title: 'Website Pages Matrix (Choose which pages to build)',
+            icon: Icons.account_tree_outlined,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF18181B),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFF27272A)),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.info_outline,
+                          color: Color(0xFFA78BFA), size: 16),
+                      SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Select all pages you wish to include. In Step 2, you will provide custom copy for each chosen page so your site is built without dummy data.',
+                          style: TextStyle(
+                            color: Color(0xFFA1A1AA),
+                            fontSize: 11,
+                            height: 1.4,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  c['hex']!,
-                  style: const TextStyle(
-                    color: Color(0xFF71717A),
-                    fontSize: 8,
-                    fontFamily: 'monospace',
+                const SizedBox(height: 16),
+                Expanded(
+                  child: ListView.separated(
+                    itemCount: _availablePages.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemBuilder: (context, index) {
+                      final page = _availablePages[index];
+                      final pageId = page['id']!;
+                      final isHome = pageId == 'Home';
+                      final isSelected = _selectedPageIds.contains(pageId);
+
+                      return InkWell(
+                        onTap: isHome
+                            ? null
+                            : () {
+                                setState(() {
+                                  if (isSelected) {
+                                    _selectedPageIds.remove(pageId);
+                                  } else {
+                                    _selectedPageIds.add(pageId);
+                                    if (!_pageContentControllers
+                                        .containsKey(pageId)) {
+                                      _pageContentControllers[pageId] =
+                                          TextEditingController();
+                                    }
+                                  }
+                                });
+                              },
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? const Color(0xFFA78BFA).withOpacity(0.08)
+                                : const Color(0xFF18181B),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: isSelected
+                                  ? const Color(0xFFA78BFA).withOpacity(0.7)
+                                  : const Color(0xFF27272A),
+                              width: isSelected ? 1.5 : 1,
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Checkbox(
+                                value: isSelected,
+                                onChanged: isHome
+                                    ? null
+                                    : (val) {
+                                        setState(() {
+                                          if (val == true) {
+                                            _selectedPageIds.add(pageId);
+                                            if (!_pageContentControllers
+                                                .containsKey(pageId)) {
+                                              _pageContentControllers[pageId] =
+                                                  TextEditingController();
+                                            }
+                                          } else {
+                                            _selectedPageIds.remove(pageId);
+                                          }
+                                        });
+                                      },
+                                activeColor: const Color(0xFFA78BFA),
+                                checkColor: Colors.white,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Text(
+                                          pageId,
+                                          style: const TextStyle(
+                                            color: Color(0xFFFAFAFA),
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFF27272A),
+                                            borderRadius:
+                                                BorderRadius.circular(4),
+                                          ),
+                                          child: Text(
+                                            page['file']!,
+                                            style: const TextStyle(
+                                              color: Color(0xFFA1A1AA),
+                                              fontSize: 9,
+                                              fontFamily: 'monospace',
+                                            ),
+                                          ),
+                                        ),
+                                        if (isHome) ...[
+                                          const SizedBox(width: 8),
+                                          const Text(
+                                            '(Required)',
+                                            style: TextStyle(
+                                              color: Color(0xFFA78BFA),
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      page['desc']!,
+                                      style: const TextStyle(
+                                        color: Color(0xFF71717A),
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
                   ),
                 ),
               ],
             ),
           ),
-        );
-      }).toList(),
-    );
-  }
-
-  Widget _buildRightPanel() {
-    return Column(
-      children: [
-        Expanded(child: _buildHeroPreviewArea()),
-        const SizedBox(height: 12),
-        _buildGenerateButton(),
+        ),
       ],
     );
   }
 
-  Widget _buildHeroPreviewArea() {
-    return Container(
-      decoration: BoxDecoration(
-        color: const Color(0xFF0C0C0F),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: const Color(0xFF27272A)),
-      ),
-      child: Column(
-        children: [
-          Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            decoration: const BoxDecoration(
-              border:
-                  Border(bottom: BorderSide(color: Color(0xFF27272A))),
-            ),
-            child: Row(
-              children: [
-                _buildStatusDot(
-                    const Color(0xFF34D399), 'SYS_STATUS: OPTIMAL'),
-                const Spacer(),
-                _buildStatusDot(
-                    const Color(0xFFA78BFA), 'NODE: FG-09'),
-              ],
-            ),
-          ),
-          Expanded(child: _buildHeroIllustration()),
-          Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            decoration: const BoxDecoration(
-              border:
-                  Border(top: BorderSide(color: Color(0xFF27272A))),
-            ),
-            child: AnimatedBuilder(
-              animation: _scanAnimController,
-              builder: (_, __) {
-                return Row(
-                  children: [
-                    Container(
-                      width: 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Color.lerp(
-                          const Color(0xFF34D399),
-                          const Color(0xFFA78BFA),
-                          _scanAnimController.value,
-                        ),
+  // ==========================================
+  // STEP 2: Custom Page Content (Zero Dummy Data)
+  // ==========================================
+  Widget _buildStep2PageContent() {
+    final selectedPagesList = _selectedPageIds.toList();
+    if (!_selectedPageIds.contains(_activeContentTab)) {
+      _activeContentTab =
+          selectedPagesList.isNotEmpty ? selectedPagesList.first : 'Home';
+    }
+
+    final activeCtrl = _pageContentControllers[_activeContentTab] ??=
+        TextEditingController();
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Left Column: Selected Pages Navigation List
+        SizedBox(
+          width: 240,
+          child: _buildCard(
+            title: 'Pages To Fill (${_selectedPageIds.length})',
+            icon: Icons.list_alt_rounded,
+            child: ListView.separated(
+              itemCount: selectedPagesList.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 6),
+              itemBuilder: (context, idx) {
+                final pageId = selectedPagesList[idx];
+                final isCurrent = _activeContentTab == pageId;
+                final hasContent = _pageContentControllers[pageId]
+                        ?.text
+                        .trim()
+                        .isNotEmpty ??
+                    false;
+
+                return InkWell(
+                  onTap: () => setState(() => _activeContentTab = pageId),
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: isCurrent
+                          ? const Color(0xFFA78BFA).withOpacity(0.15)
+                          : const Color(0xFF18181B),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: isCurrent
+                            ? const Color(0xFFA78BFA)
+                            : const Color(0xFF27272A),
                       ),
                     ),
-                    const SizedBox(width: 6),
-                    Text(
-                      'RENDERING PREVIEW...',
-                      style: TextStyle(
-                        color: Color.lerp(
-                          const Color(0xFF34D399),
-                          const Color(0xFFA78BFA),
-                          _scanAnimController.value,
+                    child: Row(
+                      children: [
+                        Icon(
+                          hasContent
+                              ? Icons.check_circle_rounded
+                              : Icons.radio_button_unchecked,
+                          size: 14,
+                          color: hasContent
+                              ? const Color(0xFF10B981)
+                              : const Color(0xFF71717A),
                         ),
-                        fontSize: 10,
-                        letterSpacing: 1.5,
-                        fontWeight: FontWeight.w500,
-                      ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            pageId,
+                            style: TextStyle(
+                              color: isCurrent
+                                  ? const Color(0xFFFAFAFA)
+                                  : const Color(0xFFA1A1AA),
+                              fontSize: 12,
+                              fontWeight: isCurrent
+                                  ? FontWeight.w600
+                                  : FontWeight.normal,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 );
               },
             ),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatusDot(Color color, String label) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 6,
-          height: 6,
-          decoration: BoxDecoration(shape: BoxShape.circle, color: color),
         ),
-        const SizedBox(width: 6),
-        Text(
-          label,
-          style: TextStyle(
-            color: color,
-            fontSize: 10,
-            letterSpacing: 1.0,
-            fontWeight: FontWeight.w500,
+        const SizedBox(width: 16),
+
+        // Right Column: AI Prompt Assistant & Page Content Textbox
+        Expanded(
+          child: _buildCard(
+            title: 'Custom Content for: $_activeContentTab Page',
+            icon: Icons.edit_note_rounded,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // AI Helper Banner
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        const Color(0xFF7C3AED).withOpacity(0.2),
+                        const Color(0xFF18181B),
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                        color: const Color(0xFFA78BFA).withOpacity(0.4)),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFA78BFA).withOpacity(0.2),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.auto_awesome,
+                            color: Color(0xFFA78BFA), size: 18),
+                      ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Zero Dummy Data Guarantee — Use AI To Generate & Paste Content Here',
+                              style: TextStyle(
+                                color: Color(0xFFFAFAFA),
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            SizedBox(height: 3),
+                            Text(
+                              'Tip: Ask ChatGPT, Gemini, or Claude to write copy for your site and paste it below. Forge AI will inject your exact text into the generated website!',
+                              style: TextStyle(
+                                color: Color(0xFFA1A1AA),
+                                fontSize: 11,
+                                height: 1.35,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      ElevatedButton.icon(
+                        onPressed: () => _copyAiPromptForPage(_activeContentTab),
+                        icon: const Icon(Icons.copy, size: 13),
+                        label: const Text('Copy Prompt for AI'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFA78BFA),
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          textStyle: const TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _buildLabel('ENTER PAGE CONTENT / TEXT (HEADLINES, DETAILS, SECTIONS, BULLETS) *'),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: _buildTextField(
+                    controller: activeCtrl,
+                    hint:
+                        'Paste or write your detailed content for $_activeContentTab here...\n\nExample:\n- Hero Headline: Empowering Next-Gen Creators\n- Subtitle: The all-in-one suite designed to accelerate your velocity.\n- Key Highlights: Lightning performance, seamless workflow integration, enterprise-level security.\n- Story/Bio: Founded by engineers passionate about craft and excellence.',
+                    maxLines: 20,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Icon(Icons.verified,
+                        size: 13, color: Color(0xFF10B981)),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Content will be directly forged into the generated HTML structure without filler text.',
+                      style: TextStyle(
+                        color: const Color(0xFFA1A1AA).withOpacity(0.8),
+                        fontSize: 10,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ],
     );
   }
 
-  Widget _buildHeroIllustration() {
-    return AnimatedBuilder(
-      animation: _scanAnimController,
-      builder: (context, child) {
-        return ClipRect(
-          child: CustomPaint(
-            painter: _ForgePainter(
-              progress: _scanAnimController.value,
-              primaryColor: const Color(0xFFA78BFA),
-              accentColor: const Color(0xFF34D399),
-            ),
-            child: child,
+  // ==========================================
+  // STEP 3: Pre-built Template Selection & Live Preview
+  // ==========================================
+  Widget _buildStep3TemplatesAndPreview() {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Left Column: Template Cards List
+        SizedBox(
+          width: 380,
+          child: _buildCard(
+            title: 'Choose Pre-Built Template',
+            icon: Icons.dashboard_customize_outlined,
+            child: _loadingTemplates
+                ? const Center(child: CircularProgressIndicator(color: Color(0xFFA78BFA)))
+                : ListView.separated(
+                    itemCount: _templates.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    itemBuilder: (context, index) {
+                      final t = _templates[index];
+                      final isSelected = _selectedTemplateId == t.id;
+
+                      return InkWell(
+                        onTap: () => setState(() => _selectedTemplateId = t.id),
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? const Color(0xFFA78BFA).withOpacity(0.12)
+                                : const Color(0xFF18181B),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: isSelected
+                                  ? const Color(0xFFA78BFA)
+                                  : const Color(0xFF27272A),
+                              width: isSelected ? 2 : 1,
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Text(
+                                    t.name,
+                                    style: const TextStyle(
+                                      color: Color(0xFFFAFAFA),
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  if (isSelected)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 8, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFA78BFA),
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      child: const Text(
+                                        'ACTIVE',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                t.description,
+                                style: const TextStyle(
+                                  color: Color(0xFFA1A1AA),
+                                  fontSize: 11,
+                                  height: 1.35,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              Wrap(
+                                spacing: 4,
+                                runSpacing: 4,
+                                children: t.tags.map((tag) {
+                                  return Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF27272A),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      tag,
+                                      style: const TextStyle(
+                                        color: Color(0xFF71717A),
+                                        fontSize: 9,
+                                      ),
+                                    ),
+                                  );
+                                }).toList(),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
           ),
-        );
-      },
-      child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: const Color(0xFFA78BFA).withOpacity(0.15),
-                border: Border.all(
-                  color: const Color(0xFFA78BFA).withOpacity(0.4),
-                  width: 1,
+        ),
+        const SizedBox(width: 16),
+
+        // Right Column: Live Interactive Iframe Preview of the Pre-built Template
+        Expanded(
+          child: _buildCard(
+            title: 'Live Interactive Template Preview (Zero Dummy Data Needed To Explore)',
+            icon: Icons.preview_rounded,
+            child: Column(
+              children: [
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF18181B),
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
+                    border: Border(bottom: BorderSide(color: Color(0xFF27272A))),
+                  ),
+                  child: Row(
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                              width: 10,
+                              height: 10,
+                              decoration: const BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Color(0xFFEF4444))),
+                          const SizedBox(width: 6),
+                          Container(
+                              width: 10,
+                              height: 10,
+                              decoration: const BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Color(0xFFFBBF24))),
+                          const SizedBox(width: 6),
+                          Container(
+                              width: 10,
+                              height: 10,
+                              decoration: const BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Color(0xFF10B981))),
+                        ],
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF09090B),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: const Color(0xFF27272A)),
+                          ),
+                          child: Text(
+                            ApiConfig.templatePreviewUrl(_selectedTemplateId),
+                            style: const TextStyle(
+                              color: Color(0xFF71717A),
+                              fontSize: 11,
+                              fontFamily: 'monospace',
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius:
+                        const BorderRadius.vertical(bottom: Radius.circular(8)),
+                    child: WebPreviewWeb(
+                      key: ValueKey(_selectedTemplateId),
+                      url: ApiConfig.templatePreviewUrl(_selectedTemplateId),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ==========================================
+  // STEP 4: Styling (Color Theme & Images) & Launch
+  // ==========================================
+  Widget _buildStep4ThemeAndLaunch() {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Left Column: Visual Styling Options (two stacked cards, each Expanded)
+        Expanded(
+          flex: 5,
+          child: Column(
+            children: [
+              Expanded(
+                child: _buildCard(
+                  title: 'Brand Color Theme',
+                  icon: Icons.palette_outlined,
+                  expand: false,
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildLabel('COLOR PALETTE'),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: _colorPalette.map((c) {
+                            final isSelected = _themeColor == c['hex'];
+                            final color = Color(int.parse(
+                                c['hex']!.replaceFirst('#', '0xFF')));
+                            return GestureDetector(
+                              onTap: () {
+                                setState(() {
+                                  _themeColor = c['hex']!;
+                                  _customHexController.text = c['hex']!;
+                                });
+                              },
+                              child: Padding(
+                                padding: const EdgeInsets.only(right: 12),
+                                child: Column(
+                                  children: [
+                                    AnimatedContainer(
+                                      duration: const Duration(milliseconds: 150),
+                                      width: 36,
+                                      height: 36,
+                                      decoration: BoxDecoration(
+                                        color: color,
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: isSelected
+                                              ? Colors.white
+                                              : Colors.transparent,
+                                          width: 2,
+                                        ),
+                                      ),
+                                      child: isSelected
+                                          ? const Icon(Icons.check,
+                                              color: Colors.white, size: 16)
+                                          : null,
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      c['label']!,
+                                      style: const TextStyle(
+                                        color: Color(0xFF71717A),
+                                        fontSize: 9,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                        const SizedBox(height: 16),
+                        _buildLabel('CUSTOM HEX CODE'),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildTextField(
+                                controller: _customHexController,
+                                hint: '#7C3AED',
+                                onChanged: (val) {
+                                  if (val.startsWith('#') && val.length == 7) {
+                                    setState(() => _themeColor = val);
+                                  }
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Container(
+                              width: 44,
+                              height: 44,
+                              decoration: BoxDecoration(
+                                color: _tryParseColor(_themeColor),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: const Color(0xFF3F3F46)),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
-              child:
-                  const Icon(Icons.bolt, color: Color(0xFFA78BFA), size: 40),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'INTELLIGENCE FORGED',
-              style: TextStyle(
-                color: Color(0xFFFAFAFA),
-                fontSize: 16,
-                letterSpacing: 3,
-                fontWeight: FontWeight.w700,
+              const SizedBox(height: 16),
+              Expanded(
+                child: _buildCard(
+                  title: 'Relevant Contextual Imagery',
+                  icon: Icons.image_search_rounded,
+                  expand: false,
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildLabel('IMAGE MOOD & INDUSTRY FOCUS'),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: _imageThemes.map((theme) {
+                            final isSelected = _imageTheme == theme;
+                            return ChoiceChip(
+                              label: Text(theme),
+                              selected: isSelected,
+                              onSelected: (_) =>
+                                  setState(() => _imageTheme = theme),
+                              selectedColor:
+                                  const Color(0xFFA78BFA).withOpacity(0.2),
+                              backgroundColor: const Color(0xFF18181B),
+                              labelStyle: TextStyle(
+                                color: isSelected
+                                    ? const Color(0xFFA78BFA)
+                                    : const Color(0xFFA1A1AA),
+                                fontSize: 12,
+                              ),
+                              side: BorderSide(
+                                color: isSelected
+                                    ? const Color(0xFFA78BFA)
+                                    : const Color(0xFF27272A),
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Images are dynamically curated via high-resolution Unsplash CDNs tailored strictly to your site topic and page narratives.',
+                          style: TextStyle(
+                            color: Color(0xFF71717A),
+                            fontSize: 11,
+                            height: 1.4,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 16),
+
+        // Right Column: Summary & Final Launch
+        Expanded(
+          flex: 6,
+          child: _buildCard(
+            title: 'Review Forging Parameters & Launch',
+            icon: Icons.rocket_launch_rounded,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildSummaryRow(
+                    'Site Name', _projectNameController.text.trim()),
+                _buildSummaryRow('Category', _selectedCategory),
+                _buildSummaryRow(
+                    'Selected Pages', _selectedPageIds.join(', ')),
+                _buildSummaryRow('Template', _selectedTemplateId.toUpperCase()),
+                _buildSummaryRow('Primary Color', _themeColor),
+                _buildSummaryRow('Image Mood', _imageTheme),
+                const SizedBox(height: 16),
+                _buildLabel('AI ENGINE CONFIGURATION'),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    _buildAiOption('Nvidia', 'Nemotron Ultra'),
+                    const SizedBox(width: 8),
+                    _buildAiOption('Gemini', 'Gemini 1.5 Pro'),
+                    const SizedBox(width: 8),
+                    _buildAiOption('OpenRouter', 'OpenRouter API'),
+                  ],
+                ),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF18181B),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFF27272A)),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.check_circle_outline,
+                          color: Color(0xFF10B981), size: 18),
+                      SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Your customized copy and selected pre-built template are ready. Clicking below initiates compilation into a complete multi-page web application.',
+                          style: TextStyle(
+                            color: Color(0xFFA1A1AA),
+                            fontSize: 11,
+                            height: 1.4,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _buildLaunchButton(),
+              ],
             ),
-            const SizedBox(height: 8),
-            const Text(
-              'AI Powered Interface Design & Development',
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAiOption(String id, String label) {
+    final isSelected = _aiModel == id;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => setState(() => _aiModel = id),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            color: isSelected
+                ? const Color(0xFFA78BFA).withOpacity(0.15)
+                : const Color(0xFF18181B),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+              color: isSelected
+                  ? const Color(0xFFA78BFA)
+                  : const Color(0xFF27272A),
+            ),
+          ),
+          child: Center(
+            child: Text(
+              label,
               style: TextStyle(
-                color: Color(0xFF71717A),
+                color: isSelected
+                    ? const Color(0xFFA78BFA)
+                    : const Color(0xFFA1A1AA),
                 fontSize: 11,
-                letterSpacing: 0.5,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
               ),
             ),
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildGenerateButton() {
+  Widget _buildSummaryRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 120,
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: Color(0xFF71717A),
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value.isEmpty ? '—' : value,
+              style: const TextStyle(
+                color: Color(0xFFFAFAFA),
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLaunchButton() {
     return GestureDetector(
       onTap: _isLoading ? null : _generateApplication,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 20),
+        padding: const EdgeInsets.symmetric(vertical: 16),
         decoration: BoxDecoration(
-          color: _isLoading
-              ? const Color(0xFF7C3AED)
-              : const Color(0xFFA78BFA),
+          color: _isLoading ? const Color(0xFF7C3AED) : const Color(0xFFA78BFA),
           borderRadius: BorderRadius.circular(8),
           boxShadow: [
             BoxShadow(
               color: const Color(0xFFA78BFA).withOpacity(0.25),
-              blurRadius: 20,
+              blurRadius: 16,
               offset: const Offset(0, 4),
             ),
           ],
@@ -854,22 +1489,20 @@ class _HomeScreenState extends State<HomeScreen>
           children: [
             if (_isLoading)
               const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(
-                    strokeWidth: 2, color: Colors.white),
+                width: 16,
+                height: 16,
+                child:
+                    CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
               )
             else
-              const Icon(Icons.rocket_launch, color: Colors.white, size: 20),
-            const SizedBox(width: 10),
+              const Icon(Icons.rocket_launch, color: Colors.white, size: 18),
+            const SizedBox(width: 8),
             Text(
-              _isLoading
-                  ? 'FORGING APPLICATION...'
-                  : 'Generate Application',
+              _isLoading ? 'FORGING COMPLETE SITE...' : 'Launch Project & Forge Site',
               style: const TextStyle(
                 color: Colors.white,
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
                 letterSpacing: 0.5,
               ),
             ),
@@ -879,118 +1512,184 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  Widget _buildFooter() {
+  // --- Bottom Action Bar (Prev / Next) ---
+  Widget _buildBottomBar() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
       decoration: const BoxDecoration(
-        border:
-            Border(top: BorderSide(color: Color(0xFF27272A), width: 1)),
+        color: Color(0xFF0C0C0F),
+        border: Border(top: BorderSide(color: Color(0xFF27272A))),
       ),
       child: Row(
         children: [
-          const Text(
-            '© 2024 FORGE AI. POWERED BY FORGE AI LABORATORY.',
-            style: TextStyle(color: Color(0xFF52525B), fontSize: 11),
-          ),
-          const Spacer(),
-          ...['Documentation', 'Privacy', 'Terms', 'Twitter', 'Discord']
-              .map(
-            (l) => Padding(
-              padding: const EdgeInsets.only(left: 16),
-              child: Text(
-                l,
-                style: const TextStyle(
-                    color: Color(0xFF71717A), fontSize: 11),
+          if (_currentStep > 0)
+            OutlinedButton.icon(
+              onPressed: _prevStep,
+              icon: const Icon(Icons.arrow_back, size: 14),
+              label: const Text('Back'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFFA1A1AA),
+                side: const BorderSide(color: Color(0xFF3F3F46)),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               ),
             ),
+          const Spacer(),
+          if (_currentStep < 3)
+            ElevatedButton.icon(
+              onPressed: _nextStep,
+              icon: const Icon(Icons.arrow_forward, size: 14),
+              label: Text(
+                _currentStep == 0
+                    ? 'Next: Enter Page Content ➔'
+                    : _currentStep == 1
+                        ? 'Next: Select Template ➔'
+                        : 'Next: Styling & Launch ➔',
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFA78BFA),
+                foregroundColor: Colors.white,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                textStyle: const TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.bold),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // --- Helper Card & Form Builders ---
+  /// [expand] controls whether the card's content uses Expanded (requires
+  /// the card itself to be inside a bounded-height parent, e.g. an Expanded
+  /// in a Row/Column with CrossAxisAlignment.stretch).
+  /// Set expand=false when the card is inside a SingleChildScrollView or
+  /// when the content sizes itself (form fields, Wrap chips, etc.).
+  Widget _buildCard({
+    required String title,
+    required IconData icon,
+    required Widget child,
+    bool expand = true,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0C0C0F),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFF27272A)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: const Color(0xFFA78BFA), size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    color: Color(0xFFFAFAFA),
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          if (expand) Expanded(child: child) else child,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLabel(String text) {
+    return Text(
+      text,
+      style: const TextStyle(
+        color: Color(0xFFA1A1AA),
+        fontSize: 10,
+        fontWeight: FontWeight.w600,
+        letterSpacing: 1.1,
+      ),
+    );
+  }
+
+  Widget _buildTextField({
+    required TextEditingController controller,
+    required String hint,
+    IconData? prefixIcon,
+    int maxLines = 1,
+    ValueChanged<String>? onChanged,
+  }) {
+    return TextField(
+      controller: controller,
+      maxLines: maxLines,
+      onChanged: onChanged,
+      style: const TextStyle(
+        color: Color(0xFFFAFAFA),
+        fontSize: 13,
+      ),
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(
+          color: Color(0xFF52525B),
+          fontSize: 12,
+        ),
+        prefixIcon: prefixIcon != null
+            ? Icon(prefixIcon, color: const Color(0xFF71717A), size: 16)
+            : null,
+        filled: true,
+        fillColor: const Color(0xFF18181B),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(6),
+          borderSide: const BorderSide(color: Color(0xFF27272A)),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(6),
+          borderSide: const BorderSide(color: Color(0xFF27272A)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(6),
+          borderSide: const BorderSide(color: Color(0xFFA78BFA)),
+        ),
+      ),
+    );
+  }
+
+  Color _tryParseColor(String hex) {
+    try {
+      final clean = hex.replaceFirst('#', '');
+      return Color(int.parse('0xFF$clean'));
+    } catch (_) {
+      return const Color(0xFFA78BFA);
+    }
+  }
+
+  Widget _buildFooter() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: Color(0xFF27272A), width: 1)),
+      ),
+      child: const Row(
+        children: [
+          Text(
+            '© FORGE AI. ZERO DUMMY DATA ENGINE.',
+            style: TextStyle(color: Color(0xFF52525B), fontSize: 10),
+          ),
+          Spacer(),
+          Text(
+            'VERSION 2.4.0 — PRODUCTION WORKFLOW',
+            style: TextStyle(color: Color(0xFF52525B), fontSize: 10),
           ),
         ],
       ),
     );
   }
-}
-
-class _ForgePainter extends CustomPainter {
-  final double progress;
-  final Color primaryColor;
-  final Color accentColor;
-
-  _ForgePainter({
-    required this.progress,
-    required this.primaryColor,
-    required this.accentColor,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()..style = PaintingStyle.stroke;
-
-    paint.color = primaryColor.withOpacity(0.06);
-    paint.strokeWidth = 1;
-    const gridSize = 40.0;
-    for (double x = 0; x < size.width; x += gridSize) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-    for (double y = 0; y < size.height; y += gridSize) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-
-    final scanY = size.height * progress;
-    final scanPaint = Paint()
-      ..shader = LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [
-          primaryColor.withOpacity(0),
-          primaryColor.withOpacity(0.15),
-          primaryColor.withOpacity(0),
-        ],
-      ).createShader(Rect.fromLTWH(0, scanY - 40, size.width, 80));
-
-    canvas.drawRect(
-      Rect.fromLTWH(0, scanY - 40, size.width, 80),
-      scanPaint,
-    );
-
-    paint.color = primaryColor.withOpacity(0.3);
-    paint.strokeWidth = 2;
-    const bracketSize = 24.0;
-    const margin = 16.0;
-
-    canvas.drawLine(const Offset(margin, margin),
-        const Offset(margin + bracketSize, margin), paint);
-    canvas.drawLine(const Offset(margin, margin),
-        const Offset(margin, margin + bracketSize), paint);
-
-    canvas.drawLine(Offset(size.width - margin, margin),
-        Offset(size.width - margin - bracketSize, margin), paint);
-    canvas.drawLine(Offset(size.width - margin, margin),
-        Offset(size.width - margin, margin + bracketSize), paint);
-
-    canvas.drawLine(Offset(margin, size.height - margin),
-        Offset(margin + bracketSize, size.height - margin), paint);
-    canvas.drawLine(Offset(margin, size.height - margin),
-        Offset(margin, size.height - margin - bracketSize), paint);
-
-    canvas.drawLine(
-        Offset(size.width - margin, size.height - margin),
-        Offset(size.width - margin - bracketSize, size.height - margin),
-        paint);
-    canvas.drawLine(
-        Offset(size.width - margin, size.height - margin),
-        Offset(size.width - margin, size.height - margin - bracketSize),
-        paint);
-
-    final center = Offset(size.width / 2, size.height / 2);
-    for (int i = 1; i <= 3; i++) {
-      final radius =
-          80.0 * i + 40 * math.sin(progress * 2 * math.pi + i * 1.2);
-      paint.color = primaryColor.withOpacity(0.04 * (4 - i));
-      paint.strokeWidth = 1;
-      canvas.drawCircle(center, radius, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(_ForgePainter old) => old.progress != progress;
 }

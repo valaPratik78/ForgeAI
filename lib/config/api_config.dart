@@ -39,4 +39,11 @@ class ApiConfig {
   /// Get the download URL (ZIP) for a project
   static String downloadUrl(String projectId) =>
       '$baseUrl/api/projects/$projectId/download';
+
+  /// Endpoint for fetching available pre-built templates
+  static String get templatesUrl => '$baseUrl/api/templates';
+
+  /// Get the preview URL for a pre-built template
+  static String templatePreviewUrl(String templateId) =>
+      '$baseUrl/api/templates/$templateId/preview/index.html';
 }

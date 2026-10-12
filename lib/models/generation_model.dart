@@ -6,6 +6,10 @@ class GenerationRequest {
   final List<String> sections;
   final String themeColor;
   final String aiModel;
+  final List<String>? selectedPages;
+  final Map<String, String>? pageContents;
+  final String? template;
+  final String? imageTheme;
 
   GenerationRequest({
     required this.applicationType,
@@ -15,6 +19,10 @@ class GenerationRequest {
     required this.sections,
     required this.themeColor,
     required this.aiModel,
+    this.selectedPages,
+    this.pageContents,
+    this.template,
+    this.imageTheme,
   });
 
   Map<String, dynamic> toJson() {
@@ -29,16 +37,51 @@ class GenerationRequest {
       'Pink': '#FF2D78',
       'Indigo': '#4F46E5',
     };
-    final hexColor = colorHexMap[themeColor] ?? '#007BFF';
+    final hexColor = colorHexMap[themeColor] ?? themeColor;
     return {
       'projectName': projectName,
       'description': description,
       'category': category,
       'sections': sections,
-      'themeColor': '$themeColor ($hexColor)',
-      'template': category.toLowerCase().replaceAll(' ', '-'),
+      'themeColor': themeColor.startsWith('#') ? themeColor : '$themeColor ($hexColor)',
+      'template': template ?? category.toLowerCase().replaceAll(' ', '-'),
       'aiModel': aiModel,
+      if (selectedPages != null) 'selectedPages': selectedPages,
+      if (pageContents != null) 'pageContents': pageContents,
+      if (imageTheme != null) 'imageTheme': imageTheme,
     };
+  }
+}
+
+class TemplateInfo {
+  final String id;
+  final String name;
+  final String description;
+  final String category;
+  final List<String> availablePages;
+  final List<String> tags;
+  final String previewUrl;
+
+  TemplateInfo({
+    required this.id,
+    required this.name,
+    required this.description,
+    required this.category,
+    required this.availablePages,
+    required this.tags,
+    required this.previewUrl,
+  });
+
+  factory TemplateInfo.fromJson(Map<String, dynamic> json) {
+    return TemplateInfo(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      description: json['description'] as String? ?? '',
+      category: json['category'] as String? ?? '',
+      availablePages: List<String>.from(json['availablePages'] as List? ?? []),
+      tags: List<String>.from(json['tags'] as List? ?? []),
+      previewUrl: json['previewUrl'] as String? ?? '',
+    );
   }
 }
 

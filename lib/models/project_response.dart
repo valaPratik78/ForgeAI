@@ -13,9 +13,9 @@ class ProjectResponse {
   /// Create a ProjectResponse from JSON received from API
   factory ProjectResponse.fromJson(Map<String, dynamic> json) {
     return ProjectResponse(
-      success: json['success'] as bool,
-      message: json['message'] as String,
-      projectId: json['projectId'] as String,
+      success: json['success'] == true,
+      message: (json['message'] ?? '').toString(),
+      projectId: (json['projectId'] ?? json['id'] ?? '').toString(),
     );
   }
 
